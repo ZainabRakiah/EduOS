@@ -18,14 +18,14 @@ A full-stack web application that automatically scrapes, parses, and displays go
 
 ## 🛠️ Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Frontend | React 18 + Vite, Vanilla CSS |
-| Backend | Node.js + Express (ESM) |
-| Database | MongoDB + Mongoose |
-| Scraping | Cheerio (static) + Playwright (dynamic/JS SPAs) |
-| AI Parsing | Google Gemini API (`@google/genai` SDK) |
-| Scheduling | `node-cron` for automated daily syncs |
+| Layer      | Technology                                      |
+| ---------- | ----------------------------------------------- |
+| Frontend   | React 18 + Vite, Vanilla CSS                    |
+| Backend    | Node.js + Express (ESM)                         |
+| Database   | MongoDB + Mongoose                              |
+| Scraping   | Cheerio (static) + Playwright (dynamic/JS SPAs) |
+| AI Parsing | Google Gemini API (`@google/genai` SDK)         |
+| Scheduling | `node-cron` for automated daily syncs           |
 
 ---
 
@@ -111,25 +111,27 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 ## 🌐 Scraped Portals
 
-| # | Portal | ID | Engine | Status |
-|---|---|---|---|---|
-| 1 | UPSC Recruitment Advertisements | `upsc-recruitment` | Cheerio (Static) | ✅ Active |
-| 2 | UPSC Active Examinations | `upsc-active-exams` | Cheerio (Static) | ✅ Active |
-| 3 | SSC Notices | `ssc-notices` | Playwright (Dynamic) | ✅ Active |
-| 4 | IBPS Bank Recruitment | `ibps-recruitment` | Playwright (Dynamic) | ✅ Active |
-| 5 | NCS Government Jobs | `ncs-government-jobs` | Playwright (Dynamic) | ✅ Active |
-| 6 | Employment News | `employment-news` | Playwright (Dynamic) | ✅ Active |
+| #   | Portal                          | ID                    | Engine               | Status    |
+| --- | ------------------------------- | --------------------- | -------------------- | --------- |
+| 1   | UPSC Recruitment Advertisements | `upsc-recruitment`    | Cheerio (Static)     | ✅ Active |
+| 2   | UPSC Active Examinations        | `upsc-active-exams`   | Cheerio (Static)     | ✅ Active |
+| 3   | SSC Notices                     | `ssc-notices`         | Playwright (Dynamic) | ✅ Active |
+| 4   | IBPS Bank Recruitment           | `ibps-recruitment`    | Playwright (Dynamic) | ✅ Active |
+| 5   | NCS Government Jobs             | `ncs-government-jobs` | Playwright (Dynamic) | ✅ Active |
+| 6   | Employment News                 | `employment-news`     | Playwright (Dynamic) | ✅ Active |
 
 ---
 
 ## 🔌 API Reference
 
 ### `GET /api/jobs`
+
 Returns paginated job listings.
 
 **Query params:** `limit` (default: 50), `page` (default: 1), `sourceSiteId`
 
 **Response:**
+
 ```json
 {
   "data": [...],
@@ -138,15 +140,19 @@ Returns paginated job listings.
 ```
 
 ### `POST /api/jobs/sync`
+
 Triggers a full scrape + parse + save cycle across all portals. Returns immediately; sync runs in background.
 
 ### `GET /api/jobs/sync/status`
+
 Returns current sync status.
+
 ```json
 { "syncInProgress": true }
 ```
 
 ### `GET /api/jobs/:id/apply`
+
 Server-side redirect to the official government application URL for the given job ID.
 
 ---
@@ -154,6 +160,7 @@ Server-side redirect to the official government application URL for the given jo
 ## 🔧 All Changes Made (from Original Clone)
 
 ### 1. Hybrid Scraping Engine (`backend/services/scraper.js`)
+
 - Added `https.Agent({ rejectUnauthorized: false })` — bypasses SSL certificate errors on government sites (IBPS, etc.)
 - Added `ignoreHTTPSErrors: true` to Playwright browser context — same bypass for headless browser
 - Reduced `SCRAPE_TIMEOUT` from 60s → 15s and `PLAYWRIGHT_TIMEOUT` from 60s → 15s
@@ -162,12 +169,14 @@ Server-side redirect to the official government application URL for the given jo
 - Added retry logic with 1 retry on static fetch failures
 
 ### 2. Regex Parser (`backend/services/regexParser.js`) — NEW FILE
+
 - Created a zero-cost regex-based field extractor as Stage 1 of parsing
 - Extracts: qualification, vacancies, salary, age limit, PDF links, job location
 - Returns `isComplete: true` only when enough fields are confidently extracted
 - Prevents unnecessary Gemini API calls for well-structured pages
 
 ### 3. Pipeline Orchestration (`backend/services/pipeline.js`)
+
 - Implemented **hybrid parsing**: regex first → Gemini only as fallback
 - Added **4-second rate-limiting delay** before each Gemini API call to respect the 15 RPM free-tier limit
 - Added **parallel detail scraping** in chunks of 5 (was sequential)
@@ -176,21 +185,25 @@ Server-side redirect to the official government application URL for the given jo
 - Added `siteConfig.url` as final fallback for application URL to prevent `Invalid officialApplicationUrl` errors
 
 ### 4. Gemini Parser (`backend/services/geminiParser.js`)
+
 - Updated `validateParsedJob()` to accept `portalUrl` as a third argument
 - URL resolution now follows a priority chain: `scrapedUrl` → `gemini URL` → `portalUrl`
 - Only throws if ALL three options are invalid — previously threw if scraped URL was missing
 
 ### 5. Site Registry (`backend/config/siteRegistry.js`)
+
 - **IBPS**: Changed from `siteType: 'static'` → `'dynamic'` (Playwright). Updated selectors to target Elementor shortcode `.detail-section` rows
 - **NCS**: Updated URL from `https://www.ncs.gov.in` → `https://www.ncs.gov.in/jobseeker/Jobs/GovtJobs` to target the government jobs category directly. Updated Angular-specific selectors
 - **Employment News**: Added new portal pointing to `https://employmentnews.gov.in/NewEmp/AllJobs.aspx?k=All`. Uses ASP.NET GridView table row selectors
 - **Removed**: `india-gov-whats-new` (404) and `india-gov-spotlight` (NIC firewall blocks headless browsers)
 
 ### 6. Frontend Dashboard (`frontend/src/App.jsx`)
+
 - Replaced `National Portal` group (deleted portals) with `Employment News` 📰
 - Updated `PORTAL_MAPPING`, `PORTAL_FULL_NAMES`, and `PORTAL_LOGOS` maps
 
 ### 7. Standalone Test Script (`test-scraper.js`) — NEW FILE
+
 - Created a root-level test script to verify each portal scraper independently
 - Runs Cheerio + Playwright scraping without touching MongoDB or Gemini API
 - Displays per-portal: engine used, duration, listing count, sample listing, and errors

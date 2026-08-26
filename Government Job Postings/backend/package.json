@@ -7,8 +7,12 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "sync": "node -e \"import('./services/pipeline.js').then(m => m.runFullSync())\"",
-    "postinstall": "npx playwright install chromium"
+    "sync": "node services/incrementalSync.js",
+    "sync:deep": "node services/incrementalSync.js --force",
+    "renormalize": "node scripts/renormalize.js",
+    "test": "node test/regexParser.test.js && node test/syncBehaviour.test.js",
+    "test:parser": "node test/regexParser.test.js",
+    "test:sync": "node test/syncBehaviour.test.js"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -21,7 +25,6 @@
     "express": "^4.21.2",
     "mongoose": "^8.9.3",
     "node-cron": "^4.6.0",
-    "node.js": "^0.0.1-security",
-    "playwright": "^1.49.1"
+    "pdf-parse": "^2.4.5"
   }
 }

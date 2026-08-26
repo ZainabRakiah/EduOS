@@ -1,0 +1,435 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  STUDENT
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum SubscriptionPlan {
+  FREE
+  PREMIUM
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum ResourceType {
+  PDF
+  DOCUMENT
+  IMAGE
+  VIDEO
+  AUDIO
+  OTHER
+}
+
+enum KnowledgeType {
+  CONCEPT
+  FORMULA
+  DEFINITION
+  SUMMARY
+  FLASHCARD
+}
+
+enum KnowledgeStatus {
+  DRAFT
+  IN_PROGRESS
+  MASTERED
+  NEEDS_REVIEW
+}
+
+enum ActivityType {
+  VIEW
+  EDIT
+  UPLOAD
+  CREATE
+  DELETE
+  STUDY_SESSION
+}
+
+model User {
+  id              String    @id @default(cuid())
+  firstName       String
+  lastName        String
+  className       String
+  email           String    @unique
+  passwordHash    String
+  role            UserRole  @default(STUDENT)
+  school          String?
+  avatar          String?
+  isVerified      Boolean   @default(false)
+  lastLoginAt     DateTime?
+  refreshToken    String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  notes           Note[]
+  stickyNotes     StickyNote[]
+  resources       Resource[]
+  knowledgeTopics KnowledgeTopic[]
+  studySessions   StudySession[]
+  activities      LearningActivity[]
+  chapterExplanations ChapterExplanation[]
+  mockTests           MockTest[]
+  mockAttempts        MockAttempt[]
+  subscription        Subscription?
+  status              String            @default("ACTIVE") // ACTIVE, INACTIVE
+  auditLogs           AuditLog[]        @relation("AdminAuditLogs")
+  targetAuditLogs     AuditLog[]        @relation("TargetUserAuditLogs")
+  subscriptionHistory SubscriptionHistory[]
+  aiUsages            AiUsage[]
+
+  @@index([email])
+  @@index([className])
+  @@map("User")
+}
+
+model Note {
+  id             String    @id @default(cuid())
+  title          String
+  content        String    @default("")
+  summary        String    @default("")
+  importantPoints String[]  @default([])
+  sourceType     String    @default("AI_EXPLANATION")
+  sourceDocument String    @default("General Chat")
+  subject        String?
+  tags           String[]  @default([])
+  isPinned       Boolean   @default(false)
+  isArchived     Boolean   @default(false)
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  activities  LearningActivity[]
+
+  @@index([userId])
+  @@index([userId, isPinned])
+  @@index([userId, isArchived])
+  @@map("Note")
+}
+
+model StickyNote {
+  id         String   @id @default(cuid())
+  title      String
+  content    String
+  color      String
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documentId String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId])
+  @@map("StickyNote")
+}
+
+enum ResourceFileType {
+  PDF
+  IMAGE
+}
+
+enum ResourceStatus {
+  UPLOADED
+  PROCESSING
+  READY
+  FAILED
+}
+
+model Resource {
+  id               String           @id @default(cuid())
+  userId           String
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title            String
+  originalFileName String
+  fileType         ResourceFileType
+  fileUrl          String
+  fileSize         Int
+  mimeType         String
+  status           ResourceStatus   @default(UPLOADED)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  activities       LearningActivity[]
+  contents         ResourceContent[]
+  chunks           ResourceChunk[]
+
+  @@index([userId])
+  @@map("Resource")
+}
+
+model ResourceContent {
+  id         String   @id @default(cuid())
+  resourceId String
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  pageNumber Int
+  content    String
+  wordCount  Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([resourceId, pageNumber])
+  @@index([resourceId])
+  @@map("ResourceContent")
+}
+
+model ResourceChunk {
+  id         String   @id @default(cuid())
+  resourceId String
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  pageNumber Int
+  chunkIndex Int
+  chunkText  String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([resourceId])
+  @@map("ResourceChunk")
+}
+
+model KnowledgeTopic {
+  id          String          @id @default(cuid())
+  name        String
+  description String?
+  type        KnowledgeType   @default(CONCEPT)
+  status      KnowledgeStatus @default(DRAFT)
+  content     String          @default("")
+  subject     String?
+  tags        String[]        @default([])
+  mastery     Int             @default(0)
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  activities  LearningActivity[]
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([userId, type])
+  @@map("KnowledgeTopic")
+}
+
+model StudySession {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject   String?
+  startTime DateTime
+  endTime   DateTime?
+  duration  Int      @default(0)
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, createdAt])
+  @@map("StudySession")
+}
+
+model LearningActivity {
+  id        String       @id @default(cuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      ActivityType
+  entityType String
+  entityId   String
+  title     String
+  metadata  Json?
+  createdAt DateTime     @default(now())
+
+  noteId    String?
+  resourceId String?
+  knowledgeTopicId String?
+
+  note      Note?         @relation(fields: [noteId], references: [id])
+  resource  Resource?     @relation(fields: [resourceId], references: [id])
+  knowledge KnowledgeTopic? @relation(fields: [knowledgeTopicId], references: [id])
+
+  @@index([userId])
+  @@index([userId, createdAt])
+  @@index([userId, type])
+  @@map("LearningActivity")
+}
+
+enum ExplanationStatus {
+  UPLOADED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model ChapterExplanation {
+  id           String            @id @default(cuid())
+  userId       String
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title        String
+  class        String
+  subject      String
+  originalType String
+  originalFile String?
+  originalText String?
+  status       ExplanationStatus @default(UPLOADED)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([userId])
+  @@map("ChapterExplanation")
+}
+
+model MockTest {
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title           String
+  subject         String
+  description     String?
+  difficulty      String         @default("Easy") // Easy, Medium, Hard
+  durationMinutes Int            @default(20)
+  totalQuestions  Int            @default(10)
+  totalMarks      Int            @default(10)
+  questions       MockQuestion[]
+  attempts        MockAttempt[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@map("MockTest")
+}
+
+model MockQuestion {
+  id            String       @id @default(cuid())
+  mockTestId    String
+  mockTest      MockTest     @relation(fields: [mockTestId], references: [id], onDelete: Cascade)
+  question      String
+  optionA       String
+  optionB       String
+  optionC       String
+  optionD       String
+  correctOption String       // A, B, C, D
+  explanation   String?
+  marks         Int          @default(1)
+  answers       MockAnswer[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@map("MockQuestion")
+}
+
+model MockAttempt {
+  id           String       @id @default(cuid())
+  mockTestId   String
+  mockTest     MockTest     @relation(fields: [mockTestId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  score        Int          @default(0)
+  percentage   Float        @default(0.0)
+  totalCorrect Int          @default(0)
+  totalWrong   Int          @default(0)
+  skipped      Int          @default(0)
+  totalMarks   Int          @default(0)
+  startedAt    DateTime     @default(now())
+  submittedAt  DateTime     @default(now())
+  timeTaken    Int          @default(0) // in seconds
+  answers      MockAnswer[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@map("MockAttempt")
+}
+
+model MockAnswer {
+  id             String       @id @default(cuid())
+  attemptId      String
+  attempt        MockAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId     String
+  question       MockQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  selectedOption String?      // A, B, C, D
+  isCorrect      Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@map("MockAnswer")
+}
+
+model Subscription {
+  id        String             @id @default(cuid())
+  userId    String             @unique
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan      SubscriptionPlan   @default(FREE)
+  status    SubscriptionStatus @default(ACTIVE)
+  startDate DateTime           @default(now())
+  endDate   DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@map("Subscription")
+}
+
+enum SubscriptionActivityAction {
+  CREATED
+  ACTIVATED
+  EXTENDED
+  EXPIRED
+  CANCELLED
+  UPGRADED
+  DOWNGRADED
+}
+
+model SubscriptionHistory {
+  id           String                     @id @default(cuid())
+  userId       String
+  user         User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action       SubscriptionActivityAction
+  oldPlan      SubscriptionPlan?
+  newPlan      SubscriptionPlan
+  oldStatus    SubscriptionStatus?
+  newStatus    SubscriptionStatus
+  startDate    DateTime
+  endDate      DateTime?
+  performedBy  String                     // "SYSTEM", "SUPER_ADMIN", or admin's userId
+  createdAt    DateTime                   @default(now())
+
+  @@index([userId])
+  @@map("SubscriptionHistory")
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  adminId      String
+  admin        User     @relation("AdminAuditLogs", fields: [adminId], references: [id], onDelete: Cascade)
+  action       String
+  targetUserId String?
+  targetUser   User?    @relation("TargetUserAuditLogs", fields: [targetUserId], references: [id], onDelete: SetNull)
+  description  String
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([adminId])
+  @@map("AuditLog")
+}
+
+model AiUsage {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  feature          String   // "CHAT", "EXPLAIN", "EXTRACT_POINTS", "IMAGE_GENERATE"
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  cost             Float    @default(0.0)
+  createdAt        DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("AiUsage")
+}

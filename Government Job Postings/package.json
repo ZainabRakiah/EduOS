@@ -1,0 +1,11 @@
+{
+  "name": "root-scraper-test",
+  "type": "module",
+  "dependencies": {
+    "@google/genai": "^2.17.1",
+    "axios": "^1.19.0",
+    "cheerio": "^1.2.0",
+    "dotenv": "^17.4.2",
+    "playwright": "^1.62.1"
+  }
+}

@@ -1,0 +1,12 @@
+export { default as uiReducer } from './ui.slice.js';
+export { default as authReducer } from './auth.slice.js';
+export { default as notesReducer } from './notes.slice.js';
+export { default as resourcesReducer } from './resources.slice.js';
+export { default as knowledgeReducer } from './knowledge.slice.js';
+export { default as historyReducer } from './history.slice.js';
+export { default as settingsReducer } from './settings.slice.js';
+export { default as dashboardReducer } from './dashboard.slice.js';
+export { default as chapterExplainerReducer } from './chapter-explainer.slice.js';
+export { default as mockTestReducer } from './mock-test.slice.js';
+export { default as subscriptionReducer } from './subscription.slice.js';
+export { default as adminReducer } from './admin.slice.js';

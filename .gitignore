@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Build files
+dist/
+build/
+.next/
+out/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Datasets / large data
+*.csv
+*.xlsx
+*.xls
+*.parquet
+*.jsonl
+datasets/
+dataset/
+data/
+
+# Coverage / cache
+coverage/
+.cache/

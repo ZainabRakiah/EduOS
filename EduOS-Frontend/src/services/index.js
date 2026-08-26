@@ -1,0 +1,11 @@
+export { default as apiClient } from './api.service.js';
+export { default as authService } from './auth.service.js';
+export { default as dashboardService } from './dashboard.service.js';
+export { default as notesService } from './notes.service.js';
+export { default as resourcesService } from './resources.service.js';
+export { default as knowledgeService } from './knowledge.service.js';
+export { default as historyService } from './history.service.js';
+export { default as settingsService } from './settings.service.js';
+export { default as chapterExplainerService } from './chapter-explainer.service.js';
+export { default as mockTestService } from './mock-test.service.js';
+export { default as adminService } from './admin.service.js';

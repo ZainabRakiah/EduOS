@@ -1,224 +1,265 @@
 /**
- * Gemini Parser
- * ─────────────
- * Converts raw scraped text into structured job JSON using the official
- * @google/genai SDK with enforced responseSchema output.
+ * Gemini Narrative Enrichment
+ * ───────────────────────────
+ * Asks the model for **only what deterministic extraction cannot produce**.
+ *
+ * Previously this file asked Gemini for everything — title, department,
+ * qualification, vacancies, salary, age limit, PDF URL, location, deadline —
+ * for every listing on every sync. That was the wrong division of labour twice
+ * over. Those fields are *stated* on the page in labelled form, so a selector or
+ * a regex reads them exactly, for free, deterministically and identically on
+ * every run; handing them to a language model instead introduced variance into
+ * values that feed a content hash, which means the same unchanged posting could
+ * hash differently between runs and trigger a pointless write.
+ *
+ * What genuinely needs a model is the prose: a 52-page UPSC booklet states duties
+ * and required experience in paragraphs with no label to anchor on. So this file
+ * now returns five narrative fields and nothing else. Everything structured is
+ * already resolved by the time this is called, and is never overwritten by it.
+ *
+ * ── Rate limiting ──
+ * The old pipeline slept 4 s before *every* listing, whether or not it was going
+ * to call the API — roughly 8.6 minutes of `setTimeout` per sync, on the main
+ * path, blocking scraping too. Here the limiter guards the API call alone: work
+ * for other sites proceeds while a call waits its turn, and calls are only made
+ * for new or changed postings, so a steady-state sweep makes zero of them.
  */
 
 import { GoogleGenAI, Type } from '@google/genai';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 45_000;
-const SHORT_TITLE_TARGET_WORDS = 10;
-const SHORT_TITLE_MAX_WORDS = 50;
 
-const JOB_RESPONSE_SCHEMA = {
+/** Requests per minute. The free tier for flash-lite allows 15. */
+const GEMINI_RPM = Number(process.env.GEMINI_RPM) || 15;
+
+/**
+ * Hard ceiling on calls per sync run.
+ *
+ * A first run against an empty database has every posting to enrich at once.
+ * Without a cap that is one long serialized queue; with it, the run finishes and
+ * the remainder is picked up by the next sweep, which will still see those
+ * postings as needing enrichment. Progress is incremental either way.
+ */
+const GEMINI_MAX_CALLS_PER_RUN = Number(process.env.GEMINI_MAX_CALLS_PER_RUN) || 40;
+
+/** Text below this length cannot contain a usable description. */
+const MIN_TEXT_CHARS = 400;
+
+/** Prompt input cap. Enough for a full detail page or a booklet segment. */
+const MAX_PROMPT_CHARS = 14_000;
+
+const NARRATIVE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    shortTitle: {
-      type: Type.STRING,
-      description: 'Concise, highly readable job headline — maximum 10 words',
-    },
-    department: {
-      type: Type.STRING,
-      description: 'Official hiring entity or ministry name',
-    },
-    qualification: {
-      type: Type.STRING,
-      description: 'Minimum educational qualification needed (e.g. "Graduate", "B.Tech", "Not specified")',
-    },
-    vacancies: {
-      type: Type.STRING,
-      description: 'Number of vacancies/posts, or "Not specified"',
-    },
-    salary: {
-      type: Type.STRING,
-      description: 'Salary range, pay scale, or pay level (e.g. "Level 10", "Rs. 56,100 - 1,77,500"), or "Not specified"',
-    },
-    ageLimit: {
-      type: Type.STRING,
-      description: 'Age criteria/limits, or "Not specified"',
-    },
-    officialNotificationPdf: {
-      type: Type.STRING,
-      description: 'URL linking directly to the notification PDF document, or "Not specified"',
-    },
-    jobLocation: {
-      type: Type.STRING,
-      description: 'Job posting location (e.g. "Across India", "Delhi"), or "Not specified"',
-    },
-    applicationDeadline: {
+    description: {
       type: Type.STRING,
       description:
-        'Closing date in a standardized readable format (e.g. "15 March 2026"), or "Not specified"',
+        'Two to four sentences describing the role in plain English, written for a job seeker. Empty string if the text does not describe the role.',
     },
-    officialApplicationUrl: {
+    responsibilities: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description:
+        'Duties or job functions, one per item, as stated. Empty array if not stated.',
+    },
+    skills: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description:
+        'Specific skills, technologies or competencies named in the text. Empty array if none are named. Do not restate educational degrees here.',
+    },
+    experience: {
       type: Type.STRING,
-      description: 'Direct URL to the official notification or application page',
+      description:
+        'Required work experience exactly as stated (e.g. "5 years in a supervisory capacity"). Empty string if not stated.',
+    },
+    workMode: {
+      type: Type.STRING,
+      description:
+        'One of: onsite, hybrid, remote, unknown. Use "unknown" unless the text explicitly states the arrangement. An office address is NOT a statement of work mode.',
     },
   },
-  required: ['shortTitle', 'department', 'applicationDeadline', 'officialApplicationUrl'],
+  required: ['description', 'responsibilities', 'skills', 'experience', 'workMode'],
 };
 
-let client;
+const WORK_MODES = new Set(['onsite', 'hybrid', 'remote', 'unknown']);
 
+let client;
 
 function getClient() {
   if (!client) {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is not set — cannot parse scraped data');
-    }
+    if (!apiKey) throw new Error('GEMINI_API_KEY is not set');
     client = new GoogleGenAI({ apiKey });
   }
   return client;
 }
 
-function countWords(text) {
-  return text.trim().split(/\s+/).filter(Boolean).length;
+/**
+ * Serializes calls at no more than `GEMINI_RPM` per minute.
+ *
+ * A promise chain rather than a sleep: awaiting a turn suspends only this call,
+ * so a site whose rows need no enrichment is never delayed by one that does.
+ */
+const limiter = {
+  interval: Math.ceil(60_000 / Math.max(1, GEMINI_RPM)),
+  next: 0,
+  callsThisRun: 0,
+
+  reset() {
+    this.callsThisRun = 0;
+  },
+
+  budgetLeft() {
+    return Math.max(0, GEMINI_MAX_CALLS_PER_RUN - this.callsThisRun);
+  },
+
+  async take() {
+    const now = Date.now();
+    const at = Math.max(now, this.next);
+    this.next = at + this.interval;
+    this.callsThisRun += 1;
+    const wait = at - now;
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  },
+};
+
+export function resetAiBudget() {
+  limiter.reset();
 }
 
-function enforceShortTitleLimit(title) {
-  const trimmed = title.trim();
-  const wordCount = countWords(trimmed);
-
-  if (wordCount <= SHORT_TITLE_MAX_WORDS) {
-    return trimmed;
-  }
-
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  const truncated = words.slice(0, SHORT_TITLE_MAX_WORDS).join(' ');
-  console.warn(
-    `[gemini] shortTitle exceeded ${SHORT_TITLE_MAX_WORDS} words (${wordCount}) — truncated`
-  );
-  return `${truncated}…`;
+export function aiBudgetLeft() {
+  return limiter.budgetLeft();
 }
 
-function isValidHttpUrl(value) {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
+export function isAiConfigured() {
+  return Boolean(process.env.GEMINI_API_KEY);
 }
 
-function buildPrompt(rawText, { department, applicationUrl, sourceName }) {
-  return `You are a precise data-extraction assistant for Indian government job portals.
-Extract job/examination listing details from the raw text below.
+function buildPrompt(rawText, context) {
+  return `You extract narrative detail from Indian government job and examination notifications.
 
-Rules:
-- shortTitle: generate a concise, highly readable headline (maximum ${SHORT_TITLE_TARGET_WORDS} words)
-- department: use the official entity name; prefer "${department}" unless the text clearly states otherwise
-- qualification: extract educational qualification requirements
-- vacancies: extract the total number of vacancies/posts
-- salary: extract salary structure or pay scale
-- ageLimit: extract maximum/minimum age criteria
-- officialNotificationPdf: extract URL to official PDF notification/advertisement if present in the text
-- jobLocation: extract location where the job is based
-- applicationDeadline: normalize dates to a readable format; use "Not specified" if absent
-- officialApplicationUrl: use the known URL if provided; otherwise extract from the text
-- Do not invent information
+Return ONLY these five things, taken from the text below. Never invent anything.
+Leave a field empty ("" or []) when the text does not state it — an empty field is
+correct and useful; a guessed one is not.
 
-Source portal: ${sourceName}
-Default department: ${department}
-Known application URL: ${applicationUrl || 'none provided'}
+- description: 2-4 plain sentences about the role, for a job seeker.
+- responsibilities: duties/functions as stated, one per item.
+- skills: named skills, technologies or competencies. Not degrees.
+- experience: required work experience, as stated.
+- workMode: onsite | hybrid | remote | unknown. Default to "unknown" — these
+  notifications almost never state a work arrangement, and an office address is
+  not a statement of one.
 
-Raw scraped text:
+Do NOT return the job title, organisation, qualification, salary, vacancy count,
+age limit, dates or URLs. Those are already extracted from structured fields and
+your answer would be discarded.
+
+Post: ${context.title || 'unknown'}
+Organisation: ${context.organization || context.department || 'unknown'}
+
+Text:
 ---
-${rawText.slice(0, 8000)}
+${rawText.slice(0, MAX_PROMPT_CHARS)}
 ---`;
 }
 
-function validateParsedJob(data, scrapedUrl, portalUrl) {
-  const required = ['shortTitle', 'department', 'officialApplicationUrl'];
+function sanitize(data) {
+  const list = (value, max) =>
+    Array.isArray(value)
+      ? value
+          .map((v) => String(v).replace(/\s+/g, ' ').trim())
+          .filter((v) => v.length >= 3)
+          .slice(0, max)
+      : [];
 
-  for (const field of required) {
-    if (!data[field] || typeof data[field] !== 'string' || !data[field].trim()) {
-      throw new Error(`Gemini returned invalid or empty "${field}"`);
-    }
-  }
-
-  let officialApplicationUrl = 'Not specified';
-
-  if (scrapedUrl && isValidHttpUrl(scrapedUrl)) {
-    officialApplicationUrl = scrapedUrl;
-  } else if (data.officialApplicationUrl && isValidHttpUrl(data.officialApplicationUrl.trim())) {
-    officialApplicationUrl = data.officialApplicationUrl.trim();
-  } else if (portalUrl && isValidHttpUrl(portalUrl)) {
-    officialApplicationUrl = portalUrl;
-  }
-
-  if (!isValidHttpUrl(officialApplicationUrl)) {
-    throw new Error('Gemini returned an invalid officialApplicationUrl');
-  }
+  const mode = String(data.workMode || '').toLowerCase().trim();
 
   return {
-    shortTitle: enforceShortTitleLimit(data.shortTitle),
-    department: data.department.trim(),
-    qualification: (data.qualification || 'Not specified').trim(),
-    vacancies: (data.vacancies || 'Not specified').trim(),
-    salary: (data.salary || 'Not specified').trim(),
-    ageLimit: (data.ageLimit || 'Not specified').trim(),
-    officialNotificationPdf: (data.officialNotificationPdf || 'Not specified').trim(),
-    jobLocation: (data.jobLocation || 'Not specified').trim(),
-    applicationDeadline: (data.applicationDeadline || 'Not specified').trim(),
-    officialApplicationUrl,
+    description: String(data.description || '').replace(/\s+/g, ' ').trim(),
+    responsibilities: list(data.responsibilities, 12),
+    skills: list(data.skills, 15),
+    experience: String(data.experience || '').replace(/\s+/g, ' ').trim(),
+    workMode: WORK_MODES.has(mode) ? mode : 'unknown',
   };
 }
 
 /**
- * Parses raw scraped text into structured job data via Gemini.
+ * Fills narrative fields on a row from its accumulated text.
  *
- * @param {string} rawText - Unstructured text from a portal listing block
- * @param {object} context  - { department, applicationUrl, sourceName }
- * @returns {Promise<object>} Validated job object ready for MongoDB insert
+ * Mutates and returns `row`. Structured values already present are never
+ * touched. A failure is recorded on the row and swallowed — a posting with a
+ * real title, deadline and URL but no prose description is still worth showing,
+ * and losing it to an API hiccup would be strictly worse.
+ *
+ * @param {object} row Extractor row carrying `rawText`
+ * @param {object} context { title, organization, department }
+ * @returns {Promise<object>} row
  */
-export async function parseJobWithGemini(rawText, context = {}) {
-  if (!rawText || rawText.trim().length < 10) {
-    throw new Error('Raw text is too short to parse meaningfully');
-  }
+export async function enrichNarrative(row, context = {}) {
+  const text = row.rawText || '';
 
-  const ai = getClient();
-  const prompt = buildPrompt(rawText, context);
+  // Already complete from deterministic extraction — nothing to ask for.
+  const needs =
+    !row.description ||
+    !row.responsibilities?.length ||
+    !row.skills?.length ||
+    !row.experience;
+
+  if (!needs) return row;
+
+  if (text.length < MIN_TEXT_CHARS) {
+    row.aiSkipped = 'insufficient text';
+    return row;
+  }
+  if (!isAiConfigured()) {
+    row.aiSkipped = 'GEMINI_API_KEY not set';
+    return row;
+  }
+  if (limiter.budgetLeft() <= 0) {
+    row.aiSkipped = 'per-run AI budget exhausted';
+    return row;
+  }
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
 
   try {
-    const response = await ai.models.generateContent({
+    await limiter.take();
+
+    const response = await getClient().models.generateContent({
       model: GEMINI_MODEL,
-      contents: prompt,
+      contents: buildPrompt(text, { ...context, title: context.title || row.title }),
       config: {
         responseMimeType: 'application/json',
-        responseSchema: JOB_RESPONSE_SCHEMA,
+        responseSchema: NARRATIVE_SCHEMA,
         temperature: 0.1,
         abortSignal: controller.signal,
       },
     });
 
-    const content = response.text;
+    if (!response.text) throw new Error('empty response');
 
-    if (!content) {
-      throw new Error('Gemini returned an empty response');
+    const parsed = sanitize(JSON.parse(response.text));
+
+    if (!row.description && parsed.description) row.description = parsed.description;
+    if (!row.responsibilities?.length && parsed.responsibilities.length) {
+      row.responsibilities = parsed.responsibilities;
     }
+    if (!row.skills?.length && parsed.skills.length) row.skills = parsed.skills;
+    if (!row.experience && parsed.experience) row.experience = parsed.experience;
+    if (!row.workMode && parsed.workMode !== 'unknown') row.workMode = parsed.workMode;
 
-    let parsed;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      throw new Error(`Gemini returned non-JSON content: ${content.slice(0, 200)}`);
-    }
-
-    return validateParsedJob(parsed, context.applicationUrl, context.portalUrl);
+    row.extraction = { ...(row.extraction || {}), usedAi: true };
   } catch (error) {
-    if (error.name === 'AbortError') {
-      throw new Error(`Gemini request timed out after ${GEMINI_TIMEOUT_MS}ms`);
-    }
-    throw error;
+    row.aiError =
+      error.name === 'AbortError' ? `timed out after ${GEMINI_TIMEOUT_MS}ms` : error.message;
   } finally {
     clearTimeout(timeoutId);
   }
+
+  return row;
 }
 
-export default parseJobWithGemini;
+export default { enrichNarrative, resetAiBudget, aiBudgetLeft, isAiConfigured };

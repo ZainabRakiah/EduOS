@@ -10,7 +10,7 @@
 .sidebar {
   width: 280px;
   background-color: var(--bg-sidebar);
-  color: var(--text-primary);
+  color: white;
   display: flex;
   flex-direction: column;
   padding: 24px 16px;
@@ -46,7 +46,7 @@
 .brand-info h2 {
   font-size: 18px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: white;
   line-height: 1.2;
 }
 
@@ -91,8 +91,8 @@
 }
 
 .nav-item:hover {
-  background-color: rgba(0, 0, 0, 0.05);
-  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.05);
+  color: white;
 }
 
 .nav-item.active {
@@ -112,8 +112,8 @@
 }
 
 .nav-badge {
-  background-color: rgba(0, 0, 0, 0.1);
-  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.1);
+  color: white;
   font-size: 11px;
   padding: 2px 6px;
   border-radius: 20px;
@@ -816,4 +816,54 @@ input:checked + .slider:before {
   font-weight: 700;
   color: var(--text-primary);
   margin-top: 2px;
+}
+
+/* ── Loading & empty states ────────────────────────────────────────────────
+   These three classes were referenced by the dashboard but never defined, so
+   the first paint and the no-results case both rendered as unstyled text. */
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.spinner {
+  display: inline-block;
+  border: 3px solid var(--color-primary);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.empty-state {
+  background-color: var(--bg-card);
+  border: 1px dashed var(--border-color);
+  border-radius: 14px;
+  padding: 48px 32px;
+  text-align: center;
+}
+
+.empty-state h3 {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 6px;
+}
+
+.empty-state p {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  margin: 0 auto;
+  max-width: 460px;
+  line-height: 1.5;
 }
